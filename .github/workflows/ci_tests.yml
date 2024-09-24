@@ -8,17 +8,13 @@ env:
 
 jobs:
   test_linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.12"]
 
     steps:
       - uses: actions/checkout@v3
-      - name: Enable password-less sudo for the user
-        run: |
-          echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$USER
-          sudo chmod 0440 /etc/sudoers.d/$USER
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
