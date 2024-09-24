@@ -7,7 +7,7 @@ env:
   PIP_ROOT_USER_ACTION: ignore
 
 jobs:
-  test_linux:
+  test_ubu:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -30,5 +30,30 @@ jobs:
           sudo apt update
           sudo apt install openvpn
       - name: Run tests
+        run: |
+          pytest test_openvpnclient.py -s -v
+
+  test_macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt;
+          fi
+      - name: Install OpenVPN on macOS
+        run: |
+          brew install openvpn
+      - name: Run tests on macOS
         run: |
           pytest test_openvpnclient.py -s -v
