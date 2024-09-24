@@ -1,0 +1,38 @@
+---
+name: Run tests
+
+on: [push, pull_request, workflow_dispatch]
+
+env:
+  PIP_ROOT_USER_ACTION: ignore
+
+jobs:
+  test_linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Enable password-less sudo for the user
+        run: |
+          echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$USER
+          sudo chmod 0440 /etc/sudoers.d/$USER
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt;
+          fi
+      - name: Install OpenVPN
+        run: |
+          sudo apt update
+          sudo apt install openvpn
+      - name: Run tests
+        run: |
+          pytest test_openvpnclient.py -s -v
