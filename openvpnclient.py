@@ -219,11 +219,11 @@ class OpenVPNClient:
     def _is_password_required() -> bool:
         """Check if the current user has passwordless sudo.
 
-        :return: True if the user has passwordless sudo for openvpn, False otherwise.
+        :return: True if the user has passwordless sudo, False otherwise.
         :rtype: bool
         """
         try:
-            check_call("sudo -n openvpn".split(), stdout=PIPE, stderr=PIPE)
+            check_call("sudo -n true".split(), stdout=PIPE, stderr=PIPE)
         except CalledProcessError:
             return True
         else:
