@@ -9,3 +9,5 @@ lint.sh
 pyproject.toml
 .linter-configs
 *.egg-info/
+dist/
+build/
