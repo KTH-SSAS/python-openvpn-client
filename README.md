@@ -9,10 +9,10 @@ feature was first introduced then.
 ## Command line usage
 ```bash
 # connect
-python3 openvpnclient.py --config=path/to//ovpn/config
+python3 -m openvpnclient --config=path/to/ovpn/config
 
 # disconnect
-python3 openvpnclient.py --disconnect
+python3 -m openvpnclient --disconnect
 ```
 
 ## Usage in code
@@ -43,4 +43,26 @@ with OpenVPNClient(ovpn_file):
 
 An autouse fixture (`await_openvpn_cleanup`) forces a delay between
 all tests. Given the rapid closing and opening of the same socket, this
-timeout may be updated if tests fail due to the socket being busy.
+timeout can be updated to avoid having a busy socket.
+
+## Contributing
+Create virtual environment and install dependencies:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r prod-requirements.txt
+```
+
+After making changes, make sure the tests pass:
+```bash
+pip install -r test-requirements.txt
+pytest tests/test_openvpnclient.py -s -v
+```
+
+## Distributing the package
+```bash
+# inside the virtual environment
+pip install build twine
+python -m build
+twine upload dist/*
+```

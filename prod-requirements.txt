@@ -1,0 +1,3 @@
+psutil
+docopt
+typing_extensions
