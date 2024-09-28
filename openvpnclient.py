@@ -285,19 +285,16 @@ class OpenVPNClient:
 
         OpenVPNClient._remove_pid_file()
         try:
-            proc = psutil.Process(pid)
-        except psutil.NoSuchProcess:
-            err_msg = f"Process with PID {pid} already exited, removed PID file"
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            err_msg = f"Process with PID {pid} has already exited"
             raise ProcessLookupError(err_msg) from None
 
-        proc.terminate()  # 'explicit-exit-notify' requires SIGTERM
-        timeout = 5
         try:
-            psutil.wait_procs([proc], timeout=timeout)
-            logger.info("Process terminated")
-        except TimeoutError:
-            proc.kill()
-            err_msg = f"Process didn't terminate in {timeout}, killed instead"
+            os.kill(pid, 0)
+        except OSError:
+            subprocess.run(f"sudo kill -9 {pid}".split(), check=True)
+            err_msg = "Process didn't terminate normally, killing instead"
             raise TimeoutError(err_msg) from None
 
 
