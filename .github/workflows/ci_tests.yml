@@ -40,3 +40,10 @@ jobs:
       - name: Run tests on ${{ matrix.os }}
         run: |
           pytest test_openvpnclient.py -s -v
+
+      - name: Get test coverage percent
+        run: >
+          pytest -s --cov=. test_openvpnclient.py
+          --cov-report term --cov-report annotate
+
+          cat "openvpnclient.py,cover"
