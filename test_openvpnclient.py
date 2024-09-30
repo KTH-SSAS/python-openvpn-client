@@ -41,7 +41,7 @@ def await_openvpn_cleanup() -> Generator[None, None, None]:
     Necessary as cleanup of the previous connection may take some time.
     """
     yield
-    time.sleep(2)
+    time.sleep(3)
 
 
 @pytest.fixture
