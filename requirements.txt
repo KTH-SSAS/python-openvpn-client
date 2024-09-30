@@ -2,4 +2,5 @@ pytest
 pytest-cov # pytest coverage reports
 pytest-tap
 docopt
+psutil
 typing_extensions

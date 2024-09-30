@@ -41,18 +41,14 @@ vpn.connect(stay_alive_on_exit=True)
 ## Testing
 **Test cases**
 1. Connect and disconnect the OpenVPN client manually
-2. Connect and disconnect the OpenVPN client automatically using the context manager 
-3. Disconnect OpenVPN client automatically on SIGINT (Ctrl+C)
+2. Connect and disconnect the OpenVPN client automatically using the context manager
+3. Disconnect OpenVPN client automatically on SIGINT (ctrl+c)
 4. Disconnect when not connected
 5. Connect when already connected
 6. Invalid client configuration syntax
 7. Server not reachable (invalid ip)
 8. Wrong path to ovpn config file
 9. Connection attempt timeout
-
-It is possible that the host OS/computer is not fast enough to close the sockets
-being opened by the repeated OpenVPN client connections and therefore an autouse fixture (`await_openvpn_cleanup`) forces a timeout between all tests. Update this timeout if the socket 
-appears to be busy.
 
 Run with minimalistic output
 ```bash
@@ -64,12 +60,11 @@ Run with verbose output
 pytest -s -v test_openvpnclient.py
 ```
 
-### Run Tests With Coverage Report 
+### Run Tests With Coverage Report
 Currently the tests achieve ~89% coverage of `openvpnclient.py`.
-- `--cov=./` flag is used to specify the directory of files that should be tested for coverage. 
+- `--cov=./` flag is used to specify the directory of files that should be tested for coverage.
 - `--cov-report annotate` flag is used to generate an annotated coverage report.
 
 ```bash
 pytest --cov=./ test_openvpnclient.py --cov-report annotate
 ```
-

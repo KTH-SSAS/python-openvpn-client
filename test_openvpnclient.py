@@ -21,7 +21,6 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import time
 from pathlib import Path
 from subprocess import DEVNULL, PIPE, Popen
 from typing import TYPE_CHECKING
@@ -31,17 +30,16 @@ if TYPE_CHECKING:
 
 import pytest
 
-from openvpnclient import OpenVPNClient, Status
+from openvpnclient import PID_FILE, STDERR_FILE, STDOUT_FILE, OpenVPNClient, Status
 
 
 @pytest.fixture(autouse=True)
-def await_openvpn_cleanup() -> Generator[None, None, None]:
-    """Timeout between closing and opening a new connection.
-
-    Necessary as cleanup of the previous connection may take some time.
-    """
+def check_no_lingering_files() -> Generator[None, None, None]:
+    """Check if the files are removed after each test."""
     yield
-    time.sleep(3)
+    assert not PID_FILE.exists()
+    assert not STDERR_FILE.exists()
+    assert not STDOUT_FILE.exists()
 
 
 @pytest.fixture
@@ -162,12 +160,9 @@ def local_server(
 ) -> Generator[None, None, None]:
     """Start a local OpenVPN server for the duration of the test session."""
     must_supply_password = OpenVPNClient._is_password_required()  # noqa: SLF001
-    if must_supply_password and not os.environ.get("SUDO_PASSWORD"):
-        err_msg = "Environment variable SUDO_PASSWORD must be set"
-        pytest.exit(err_msg)
-
+    sudo_pw_option = "-S " if must_supply_password else ""
     ovpn_server_cmd = (
-        f"sudo {'-S ' if must_supply_password else ''}"
+        f"sudo {sudo_pw_option}"
         "openvpn "
         f"--server {server_details['base_ip']} {server_details['netmask']} "
         f"--port {server_details['public_port']} "
@@ -188,7 +183,7 @@ def local_server(
 
     yield
 
-    kill_srv_cmd = f"sudo {'-S ' if must_supply_password else ''}kill {srv_proc.pid}"
+    kill_srv_cmd = f"sudo {sudo_pw_option}kill {srv_proc.pid}"
     kill_proc = Popen(
         kill_srv_cmd.split(), text=True, stdin=PIPE, stdout=DEVNULL, stderr=DEVNULL
     )
