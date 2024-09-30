@@ -36,10 +36,9 @@ class Status(Enum):
     """Status codes for the OpenVPN client."""
 
     CONNECTED = 1
-    CONNECTION_FAILED = 2
-    IDLE = 3
-    USER_CANCELLED = 4
-    CONNECTION_TIMEOUT = 5
+    IDLE = 2
+    USER_CANCELLED = 3
+    CONNECTION_TIMEOUT = 4
 
 
 class OpenVPNClient:
@@ -119,11 +118,9 @@ class OpenVPNClient:
             elif self.status is Status.USER_CANCELLED:
                 logger.info("User cancelled during connection")
                 OpenVPNClient.disconnect()
-            elif self.status is Status.CONNECTION_FAILED:
-                err_msg = "Connection failed"
-                logger.info(err_msg)
-                OpenVPNClient._cleanup()
-                raise ConnectionRefusedError(err_msg)
+            else:
+                err_msg = f"Unknown status {self.status} after lock was released"
+                raise RuntimeError("Unknown error")
 
     def _start_process(self) -> None:
         # since openvpn requires root we need to check if the user has:
@@ -199,9 +196,7 @@ class OpenVPNClient:
             "ifconfig: ioctl (SIOCDIFADDR): Can't assign requested address", ""
         )
         if stderr:
-            log_msg += (
-                "error/output:" + "\nSTDOUT:\n" + stdout + "\nSTDERR:\n" + stderr
-            )
+            log_msg += "error/output:" + "\nSTDOUT:\n" + stdout + "\nSTDERR:\n" + stderr
             logger.info(log_msg)
             raise ConnectionRefusedError(log_msg)
 

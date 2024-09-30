@@ -236,14 +236,14 @@ def test_already_connected(openvpn_client: OpenVPNClient) -> None:
 
 def test_invalid_client_config_syntax(paths: dict) -> None:
     """Invalid client configuration should raise an error."""
-    with pytest.raises(ConnectionRefusedError):  # noqa: SIM117
+    with pytest.raises(TimeoutError):  # noqa: SIM117
         with OpenVPNClient(paths["clientconfig_badsyntax"]):
             raise AssertionError("Should not reach here")  # noqa: EM101, TRY003
 
 
 def test_server_not_reachable(paths: dict) -> None:
-    """Make sure the connection is refused when the server is not reachable."""
-    with pytest.raises(ConnectionRefusedError):  # noqa: SIM117
+    """Make sure no connection is made when the server is unreachable."""
+    with pytest.raises(TimeoutError):  # noqa: SIM117
         with OpenVPNClient(paths["clientconfig_badserver"]):
             raise AssertionError("Should not reach here")  # noqa: EM101, TRY003
 
