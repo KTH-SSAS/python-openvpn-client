@@ -195,16 +195,17 @@ class OpenVPNClient:
         OpenVPNClient._cleanup()
 
         # unavoidable error from trying to remove a potentially pre-existing tun/tap
-        expected_stderr = (
-            "ifconfig: ioctl (SIOCDIFADDR): Can't assign requested address"
+        stderr = stderr.replace(
+            "ifconfig: ioctl (SIOCDIFADDR): Can't assign requested address", ""
         )
-        if len(stderr.split("\n")) > 1 or stderr.split("\n")[0] != expected_stderr:
-            output = "\nSTDOUT:\n" + stdout + "\nSTDERR:\n" + stderr
-            log_msg += output
+        if stderr:
+            log_msg += (
+                "error/output:" + "\nSTDOUT:\n" + stdout + "\nSTDERR:\n" + stderr
+            )
             logger.info(log_msg)
             raise ConnectionRefusedError(log_msg)
 
-        logger.info(log_msg)
+        logger.info(log_msg + ", nothing to report")
 
     @staticmethod
     def _must_supply_password() -> bool:
