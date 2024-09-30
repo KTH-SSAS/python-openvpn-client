@@ -159,7 +159,7 @@ def local_server(
     server_details: dict, paths: dict[str], fingerprint: dict[str]
 ) -> Generator[None, None, None]:
     """Start a local OpenVPN server for the duration of the test session."""
-    must_supply_password = OpenVPNClient._is_password_required()  # noqa: SLF001
+    must_supply_password = OpenVPNClient._must_supply_password()  # noqa: SLF001
     sudo_pw_option = "-S " if must_supply_password else ""
     ovpn_server_cmd = (
         f"sudo {sudo_pw_option}"
