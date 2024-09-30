@@ -16,7 +16,6 @@ from tempfile import gettempdir
 from time import sleep
 from types import TracebackType  # noqa: TCH003, used to type annotate
 
-import psutil
 from docopt import docopt
 from typing_extensions import Self
 
