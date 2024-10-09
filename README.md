@@ -1,70 +1,65 @@
-# Module openvpnclient.py
-This standalone module is intended to handle OpenVPN connections to a remote server.
+# Python OpenVPN Client
+This package allows an OpenVPN connection to be established
+seamlessly given a `config.ovpn` file and then later be
+disconnected when instructed to. The functionality is tested to
+work on macOS and Linux (images: `macOS-latest` and `ubuntu-24.04`).
 
-## Setup
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-```
+Note: Testing requires `openvpn >= 2.6` since the used `peer-fingerprint`
+feature was first introduced then.
 
-## Usage
-Invoke from command line
+## Command line usage
 ```bash
 # connect
-python3 openvpnclient.py --config <full-path-to-ovpn-file>
+python3 -m openvpnclient --config=path/to/ovpn/config
 
 # disconnect
-python3 openvpnclient.py --disconnect
+python3 -m openvpnclient --disconnect
 ```
 
-Use as dependency in script
+## Usage in code
 ```python
 from openvpnclient import OpenVPNClient
 
-# context handler
-with OpenVPNClient(ovpn_file) as vpn:
-    ...
-
-# manual start and stop
+# manually connect and disconnect
 vpn = OpenVPNClient(ovpn_file)
 vpn.connect()
-...
+# interact with network
 vpn.disconnect()
 
-# do not close the connection despite script exit
-vpn = OpenVPNClient(ovpn_file)
-vpn.connect(stay_alive_on_exit=True)
-# <script end>
+# utilize context handler
+with OpenVPNClient(ovpn_file):
+    # interact with network
 ```
 
-## Testing
-**Test cases**
-1. Connect and disconnect the OpenVPN client manually
-2. Connect and disconnect the OpenVPN client automatically using the context manager
-3. Disconnect OpenVPN client automatically on SIGINT (ctrl+c)
-4. Disconnect when not connected
-5. Connect when already connected
-6. Invalid client configuration syntax
-7. Server not reachable (invalid ip)
-8. Wrong path to ovpn config file
-9. Connection attempt timeout
-
-Run with minimalistic output
+## Contributing
+Create virtual environment and install dependencies:
 ```bash
-pytest --tap test_openvpnclient.py
+python3 -m venv venv
+source venv/bin/activate
+pip install -r prod-requirements.txt
 ```
 
-Run with verbose output
+After making changes, make sure the tests pass:
 ```bash
-pytest -s -v test_openvpnclient.py
+pip install -r test-requirements.txt
+pytest tests/test_openvpnclient.py -s -v
 ```
 
-### Run Tests With Coverage Report
-Currently the tests achieve ~89% coverage of `openvpnclient.py`.
-- `--cov=./` flag is used to specify the directory of files that should be tested for coverage.
-- `--cov-report annotate` flag is used to generate an annotated coverage report.
+Create a PR from the feature branch with the incorporated
+changes.
 
-```bash
-pytest --cov=./ test_openvpnclient.py --cov-report annotate
-```
+## Test cases
+1. Manually connect and disconnect the OpenVPN client
+1. Use context manager to connect and disconnect the OpenVPN client
+1. Disconnect client on SIGINT (ctrl+c)
+1. Disconnect when not connected
+1. Connect when already connected
+1. Invalid configuration syntax
+1. Unreachable server
+1. Invalid path to ovpn config file
+1. Connection attempt timeout
+
+An autouse fixture (`await_openvpn_cleanup`) forces a delay between
+all tests. Given the rapid closing and opening of the same socket, this
+timeout can be adjusted to make sure the socket is ready for
+subsequent test.

@@ -1,10 +1,6 @@
 __pycache__
 .pytest_cache
 .venv
-ca.crt
-*.crt
-*.key
-*.ovpn
 lint.sh
 pyproject.toml
 .linter-configs

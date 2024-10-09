@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "python-openvpn-client"
+version = "0.0.1"
+authors = [{ name = "Ludvig Larsson", email = "ludvig19@icloud.com" }]
+description = "An API for managing an OpenVPN connection"
+readme = "README.md"
+requires-python = ">=3.9" # via 'vermin'
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+dependencies = ["psutil", "docopt", "typing_extensions"]
+
+[project.urls]
+Homepage = "https://github.com/KTH-SSAS/python-openvpn-client"
+Issues = "https://github.com/KTH-SSAS/python-openvpn-client/issues"
+
+# for local development
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "off"
