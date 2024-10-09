@@ -86,16 +86,14 @@ class OpenVPNClient:
     def connect(self, *, sigint_disconnect: bool = False) -> None:
         """Establish a connection using the provided configuration file.
 
-        :param await_vpn_exit: If True, the script won't return until the VPN
-            connection is closed, thus set this to False if this should run
-            in the background
         :param sigint_disconnect: If True, the connection will be closed when
             the script recieves a SIGINT
         :raises ValueError: If the environment variable SUDO_PASSWORD is not set
             when the user does not have passwordless sudo enabled
         :raises ConnectionRefusedError: If the client is already connected
         :raises TimeoutError: If the connection attempt times out
-
+        :raises RuntimeError: If the connection status is unknown
+            (shouldn't occur).
         """
         if OpenVPNClient._get_pid() != -1:
             err_msg = "Already connected"
@@ -119,8 +117,8 @@ class OpenVPNClient:
                 logger.info("User cancelled during connection")
                 OpenVPNClient.disconnect()
             else:
-                err_msg = f"Unknown status {self.status} after lock was released"
-                raise RuntimeError("Unknown error")
+                err_msg = f"Unknown status {self.status}"
+                raise RuntimeError(err_msg)
 
     def _start_process(self) -> None:
         # since openvpn requires root we need to check if the user has:
@@ -200,7 +198,7 @@ class OpenVPNClient:
             logger.info(log_msg)
             raise ConnectionRefusedError(log_msg)
 
-        logger.info(log_msg + ", nothing to report")
+        logger.info(log_msg)
 
     @staticmethod
     def _must_supply_password() -> bool:
@@ -271,7 +269,6 @@ class OpenVPNClient:
         """Disconnect the current connection.
 
         :raises ProcessLookupError: If the PID file can't be tied to a process
-        :raises TimeoutError: If the process doesn't terminate normally
         """
         pid = OpenVPNClient._get_pid()
         if pid == -1:
@@ -331,7 +328,7 @@ if __name__ == "__main__":
         OpenVPNClient.disconnect()
     elif args["--config"]:
         config_file = args["--config"]
-        OpenVPNClient(config_file).connect(await_vpn_exit=False, sigint_disconnect=True)
+        OpenVPNClient(config_file, connect_timeout=10).connect(sigint_disconnect=True)
     else:
         print(usage)  # noqa: T201, used as executable here
         sys.exit(1)
