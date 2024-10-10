@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import signal
+import subprocess
 import sys
 import threading
 from enum import Enum
 from pathlib import Path
-from subprocess import PIPE, Popen
+from subprocess import PIPE, CalledProcessError, check_call
 from tempfile import gettempdir
-from threading import Lock
-from types import TracebackType  # noqa: TCH003, used to type annotate
 
 import psutil
 from docopt import docopt
-from typing_extensions import Self  # noqa: TCH003, used to type annotate
+from typing_extensions import Self
 
+PID_FILE = Path(gettempdir()) / "openvpnclient.pid"
+STDERR_FILE = Path(gettempdir()) / "openvpnclient.stderr"
+STDOUT_FILE = Path(gettempdir()) / "openvpnclient.stdout"
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 console_handler = logging.StreamHandler()
@@ -29,239 +32,279 @@ console_handler.setFormatter(
 logger.addHandler(console_handler)
 
 
-PID_FILE = f"{gettempdir()}/openvpnclient.pid"
-
-
 class Status(Enum):
     """Status codes for the OpenVPN client."""
 
-    CONNECTED = (1,)
-    DISCONNECTED = (2,)
-    CONNECTION_FAILED = (3,)
-    IDLE = (4,)
-    USER_CANCELLED = (5,)
-    CONNECTION_TIMEOUT = (6,)
+    CONNECTED = 1
+    IDLE = 2
+    USER_CANCELLED = 3
+    CONNECTION_TIMEOUT = 4
 
 
 class OpenVPNClient:
     """Module for managing an OpenVPN connection."""
 
     status: Status = Status.IDLE
-    proc: Popen
-    stderr: str = ""
-    stdout: str = ""
+    timer: threading.Timer
+    lock: threading.Lock
 
     def __init__(self, ovpn_file: str, connect_timeout: int = 5) -> None:
         """Initialize the OpenVPN client.
 
-        Args:
-        ----
-            ovpn_file (str): The OpenVPN configuration file
-            connect_timeout (int): The connection attempt limit in seconds
-
-        Raises:
-        ------
-            ValueError: If connect_timeout is less than, or equal to, 0
-
+        :param ovpn_file: The OpenVPN configuration file
+        :param connect_timeout: The connection attempt limit in seconds
+        :raises ValueError: If connect_timeout is less than, or equal to, 0
+        :raises FileNotFoundError: If the configuration file is not found
+        :raises RuntimeError: If OpenVPN is not installed or not available on the PATH
         """
         if connect_timeout <= 0:
             err_msg = "Connection timeout must be at least 1 second"
             raise ValueError(err_msg)
+
+        if not Path(ovpn_file).exists() or not Path(ovpn_file).is_file():
+            err_msg = f"File '{ovpn_file}' not found, or is not a file"
+            raise FileNotFoundError(err_msg)
+
+        if not shutil.which("openvpn"):
+            err_msg = "OpenVPN must be installed and available on the PATH"
+            raise RuntimeError(err_msg)
+
+        self.ovpn_file = Path(ovpn_file)
+        self.ovpn_dir = self.ovpn_file.parent
         self.connect_timeout = connect_timeout
-        self.ovpn_dir = Path(ovpn_file).parent
-        self.ovpn_file = ovpn_file
+        self.lock = threading.Lock()
 
     def __enter__(self) -> Self:
-        """Connect to the OpenVPN server when entering a context manager."""
+        """Auto-connect when using a context manager."""
         self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:  # noqa: ANN001, unused but needed for magic method
-        """Disconnect from the OpenVPN server when exiting a context manager."""
+    def __exit__(self, exc_type, exc_value, traceback) -> None:  # noqa: ANN001, F841, RUF100
+        """Disconnect when using a context manager."""
         self.disconnect()
 
-    def connect(self, *, stay_alive_on_exit: bool = False) -> None:  # noqa: PLR0915, C901, hard to factor out cleanly
-        """Connect to the OpenVPN server using the provided configuration file.
+    def connect(self, *, sigint_disconnect: bool = False) -> None:
+        """Establish a connection using the provided configuration file.
 
-        Args:
-        ----
-            stay_alive_on_exit (bool): If True, the connection will not be
-            terminated when the script is exited
-
-        Raises:
-        ------
-            NotADirectoryError: If the configuration file's directory is not found
-            FileNotFoundError: If the configuration file is not found
-            ConnectionError: If the client is already connected
-            TimeoutError: If the connection attempt times out
-
+        :param sigint_disconnect: If True, the connection will be closed when
+            the script recieves a SIGINT
+        :raises ValueError: If the environment variable SUDO_PASSWORD is not set
+            when the user does not have passwordless sudo enabled
+        :raises ConnectionRefusedError: If the client is already connected
+        :raises TimeoutError: If the connection attempt times out
+        :raises RuntimeError: If the connection status is unknown
+            (shouldn't occur).
         """
-        if not Path(self.ovpn_file).exists():
-            err_msg = f"File '{self.ovpn_file}' not found"
-            raise FileNotFoundError(err_msg)
         if OpenVPNClient._get_pid() != -1:
             err_msg = "Already connected"
-            raise ConnectionError(err_msg)
+            raise ConnectionRefusedError(err_msg)
 
-        lock = Lock()
-        lock.acquire()
+        self.lock.acquire()
+        self._setup_handlers(sigint_disconnect=sigint_disconnect)
+        self._start_process()
 
-        def on_connected(*_) -> None:  # noqa: ANN002, not relevant for functionality
+        with self.lock:
+            self.timer.cancel()
+            signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+            if self.status is Status.CONNECTED:
+                logger.info("Connection successful")
+            elif self.status is Status.CONNECTION_TIMEOUT:
+                logger.info("Connection attempt timed out")
+                OpenVPNClient.disconnect()
+                err_msg = f"Did not connect in {self.connect_timeout} seconds"
+                raise TimeoutError(err_msg)
+            elif self.status is Status.USER_CANCELLED:
+                logger.info("User cancelled during connection")
+                OpenVPNClient.disconnect()
+            else:
+                err_msg = f"Unknown status {self.status}"
+                raise RuntimeError(err_msg)
+
+    def _start_process(self) -> None:
+        # since openvpn requires root we need to check if the user has:
+        # 1. supplied the password in the environment variable, or
+        # 2. has passwordless sudo enabled
+        must_supply_password = OpenVPNClient._must_supply_password()
+        sudo_pw_option = "-S " if must_supply_password else ""
+        cmd = (
+            f"sudo {sudo_pw_option}openvpn --cd {self.ovpn_dir} --config {self.ovpn_file} "
+            f"--dev tun_ovpn --connect-retry-max 3 --connect-timeout {self.connect_timeout} "
+            "--script-security 2 --route-delay 1 --route-up"
+        ).split()
+        cmd.append(  # command for route-up should be 'one argument'
+            f"{sys.executable} -c 'import os, signal; os.kill({os.getpid()}, signal.SIGUSR1)'"
+        )
+        self.proc = subprocess.Popen(
+            cmd,
+            stdin=PIPE,
+            stdout=STDOUT_FILE.open("w"),
+            stderr=STDERR_FILE.open("w"),
+            text=True,
+        )
+        if must_supply_password:
+            self.proc.stdin.write(os.environ["SUDO_PASSWORD"] + "\n")
+            self.proc.stdin.flush()
+
+        PID_FILE.write_text(str(self.proc.pid), encoding="ascii")
+
+    def _setup_handlers(self, *, sigint_disconnect: bool) -> None:
+        # when the openvpn process has connected the remote server
+        def on_connected(*_) -> None:  # noqa: ANN002
             self.status = Status.CONNECTED
-            lock.release()
+            self.lock.release()
 
-        def on_connect_timeout(*_) -> None:  # noqa: ANN002, not relevant for functionality
+        # when the openvpn process has not connected within the timeout
+        def on_connect_timeout(*_) -> None:  # noqa: ANN002
             self.status = Status.CONNECTION_TIMEOUT
-            lock.release()
+            self.lock.release()
 
-        def on_user_cancelled(*_) -> None:  # noqa: ANN002, not relevant for functionality
+        # when a SIGINT is received
+        def on_user_cancelled(*_) -> None:  # noqa: ANN002
             if self.status is Status.CONNECTED:
                 OpenVPNClient.disconnect()
             else:
-                lock.release()
+                self.lock.release()
+
             self.status = Status.USER_CANCELLED
+            raise KeyboardInterrupt
+
+        if sigint_disconnect:
+            signal.signal(signal.SIGINT, on_user_cancelled)
 
         signal.signal(signal.SIGUSR1, on_connected)
-        signal.signal(signal.SIGINT, on_user_cancelled)
-        timer = threading.Timer(self.connect_timeout, on_connect_timeout)
-        timer.start()
-
-        cmd = [
-            "sudo", # required to run openvpn but makes exiting break
-            "openvpn",
-            "--cd",
-            self.ovpn_dir,
-            "--config",
-            self.ovpn_file,
-            "--dev",
-            "tun_ovpn",
-            "--connect-retry-max",
-            "3",
-            "--connect-timeout",
-            str(self.connect_timeout),
-            "--script-security",
-            "2",
-            "--route-delay",
-            "1",
-            "--route-up",
-            f"{sys.executable} -c 'import os, signal; os.kill({os.getpid()}, signal.SIGUSR1)'",
-        ]
-        self.proc = Popen(cmd, stderr=PIPE, stdout=PIPE)
-
-        OpenVPNClient._register_pid(self.proc.pid)
-
-        if not stay_alive_on_exit:
-
-            def proc_exited() -> None:
-                returncode = self.proc.wait()
-                if returncode != 0:
-                    self.status = Status.CONNECTION_FAILED
-                    stderr = (
-                        self.proc.stderr.read().decode() if self.proc.stderr else ""
-                    )
-                    stdout = (
-                        self.proc.stdout.read().decode() if self.proc.stdout else ""
-                    )
-                    msg = f"""\n
-                        \rOpenVPN process failed with exit code {returncode}\n
-                        \rstdout: {stdout}
-                        \rstderr: {stderr}
-                    """
-                    raise ConnectionRefusedError(msg)
-                self.status = Status.DISCONNECTED
-
-            self.on_exit_thread = threading.Thread(target=proc_exited)
-            self.on_exit_thread.start()
-
-            def excepthook(args: tuple[type, BaseException, TracebackType]) -> None:
-                lock.release()
-                raise args[0](args[1])
-
-            threading.excepthook = lambda args: excepthook(args)
-
-        with lock:
-            timer.cancel()
-            signal.signal(signal.SIGUSR1, signal.SIG_IGN)
-            if self.status is Status.CONNECTED:
-                logger.info("OpenVPN connection successful")
-            elif self.status is Status.CONNECTION_TIMEOUT:
-                OpenVPNClient.disconnect()
-                err_msg = f"Did not connect in {self.connect_timeout}s"
-                raise TimeoutError(err_msg)
-            elif self.status is Status.USER_CANCELLED:
-                OpenVPNClient.disconnect()
-            elif self.status is Status.CONNECTION_FAILED:
-                OpenVPNClient._remove_pid_file()
-                err_msg = "OpenVPN connection failed"
-                raise ConnectionRefusedError(err_msg)
+        self.timer = threading.Timer(self.connect_timeout, on_connect_timeout)
+        self.timer.start()
 
     @staticmethod
-    def _register_pid(pid: int) -> None:
-        """Store the PID of the active OpenVPN process.
+    def _on_process_exit(pid: int, *, timeout: int | None = None) -> None:
+        """Wait for the OpenVPN process to exit and log the result.
 
-        Args:
-        ----
-            pid (int): The process ID
-
+        :param pid: The PID of the OpenVPN process
+        :param timeout: The time to wait for the process to exit, defaults to unlimited
+        :raises ConnectionRefusedError: If the OpenVPN process wrote on stderr
         """
-        with Path(PID_FILE).open("w") as f:
-            f.write(str(pid))
+        psutil.Process(pid).wait(timeout=timeout)
+        log_msg = "Process exited"
+        stderr = Path(STDERR_FILE).read_text(encoding="ascii").strip()
+        stdout = Path(STDOUT_FILE).read_text(encoding="ascii").strip()
+        OpenVPNClient._cleanup()
+
+        # unavoidable error from trying to remove a potentially pre-existing tun/tap
+        stderr = stderr.replace(
+            "ifconfig: ioctl (SIOCDIFADDR): Can't assign requested address", ""
+        )
+        if stderr:
+            log_msg += "error/output:" + "\nSTDOUT:\n" + stdout + "\nSTDERR:\n" + stderr
+            logger.info(log_msg)
+            raise ConnectionRefusedError(log_msg)
+
+        logger.info(log_msg)
+
+    @staticmethod
+    def _must_supply_password() -> bool:
+        """Check if passwordless sudo is available or if password is in environment.
+
+        :raises ValueError: If $SUDO_PASSWORD is required but unset
+        :return: False if passwordless sudo, True otherwise.
+        """
+        try:
+            check_call("sudo -n true".split(), stdout=PIPE, stderr=PIPE)
+        except CalledProcessError:
+            if not os.environ.get("SUDO_PASSWORD"):
+                err_msg = "Environment variable SUDO_PASSWORD must be set"
+                raise ValueError(err_msg) from None
+
+            return True
+        else:
+            return False
 
     @staticmethod
     def _get_pid() -> int:
         """Retrieve the PID of the active OpenVPN process.
 
-        Return:
-        ------
-            int: The process ID
-
+        :raises ValueError: If the PID file contains an invalid value
+        :return: The process ID
         """
         try:
-            with Path(PID_FILE).open() as f:
-                try:
-                    return int(f.read().strip())
-                except ValueError:
-                    err_msg = f"PID in '{PID_FILE}' is not an integer"
-                    logger.exception(err_msg)
-                    raise
+            return int(Path(PID_FILE).read_text(encoding="ascii").strip())
         except FileNotFoundError:
             return -1
+        except ValueError:
+            err_msg = f"PID in '{PID_FILE}' is not an integer"
+            logger.exception(err_msg)
+            raise
 
     @staticmethod
-    def _remove_pid_file() -> None:
-        """Remove the PID file."""
-        Path(PID_FILE).unlink()
+    def _cleanup() -> None:
+        """Remove the temporary files.
+
+        :raises FileNotFoundError: If a file doesn't exist
+        """
+        err_msg = "File(s) non-existent:"
+        failed = False
+        try:
+            PID_FILE.unlink()
+        except FileNotFoundError:
+            failed = True
+            err_msg += f"\n - {PID_FILE}"
+
+        try:
+            STDERR_FILE.unlink()
+        except FileNotFoundError:
+            failed = True
+            err_msg = f"\n - {STDERR_FILE}"
+
+        try:
+            STDOUT_FILE.unlink()
+        except FileNotFoundError:
+            failed = True
+            err_msg = f"\n - {STDOUT_FILE}"
+
+        if failed:
+            logger.info(err_msg)
+            raise FileNotFoundError(err_msg)
 
     @staticmethod
     def disconnect() -> None:
-        """Disconnect the current OpenVPN connection.
+        """Disconnect the current connection.
 
-        Raise:
-        ------
-            ProcessLookupError: If the PID file is not found or the PID file is corrupt
-            TimeoutError: If the process doesn't terminate in 5 seconds
-
+        :raises ProcessLookupError: If the PID file can't be tied to a process
         """
         pid = OpenVPNClient._get_pid()
         if pid == -1:
-            err_msg = "No ongoing connection found"
+            err_msg = "No ongoing connection found (pid not registered)"
+            logger.info(err_msg)
             raise ProcessLookupError(err_msg)
+
         try:
-            proc = psutil.Process(pid)
+            process = psutil.Process(pid)
         except psutil.NoSuchProcess:
-            OpenVPNClient._remove_pid_file()
-            err_msg = f"Corrupt PID file, PID {pid} doesn't exist, removed file"
+            err_msg = "Process has already exited"
+            logger.info(err_msg)
             raise ProcessLookupError(err_msg) from None
-        proc.terminate()  # 'explicit-exit-notify' requires SIGTERM
-        timeout = 5
+
+        must_supply_password = OpenVPNClient._must_supply_password()
+        sudo_pw_option = "-S " if must_supply_password else ""
+
+        cmd = f"sudo {sudo_pw_option}kill {process.pid}".split()
+        subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE, text=True)
+        if must_supply_password:
+            process.stdin.write(os.environ["SUDO_PASSWORD"] + "\n")
+            process.stdin.flush()
+
         try:
-            psutil.wait_procs([proc], timeout=timeout)
-            OpenVPNClient._remove_pid_file()
-            logger.info("Process terminated")
-        except TimeoutError:  # unable to force slower termination
-            proc.kill()
-            err_msg = f"Process didn't terminate in {timeout}, killed instead"
-            raise TimeoutError(err_msg) from None
+            OpenVPNClient._on_process_exit(pid=process.pid, timeout=10)
+        except psutil.TimeoutExpired:
+            msg = "Failed to terminate OpenVPN process, killing instead"
+            logger.info(msg)
+
+            cmd = f"sudo kill -INT {process.pid}".split()
+            subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE, text=True)
+            if must_supply_password:
+                process.stdin.write(os.environ["SUDO_PASSWORD"] + "\n")
+                process.stdin.flush()
+
+            OpenVPNClient._on_process_exit(pid=process.pid, timeout=5)
 
 
 usage = """
@@ -270,9 +313,13 @@ usage = """
         openvpnclient.py --disconnect
 
     Options:
-        -h --help     Show this help message
+        -h --help                Show this help message
         --config=<config_file>   Configuration file (.ovpn)
-        --disconnect   Disconnect ongoing connection
+        --disconnect             Disconnect ongoing connection
+
+    Notes:
+        Any ca/crt/pkey files referenced in the .ovpn file should be relative
+        to the .ovpn file's parent directory.
 """
 if __name__ == "__main__":
     args = docopt(usage)
@@ -281,7 +328,7 @@ if __name__ == "__main__":
         OpenVPNClient.disconnect()
     elif args["--config"]:
         config_file = args["--config"]
-        OpenVPNClient(config_file).connect(stay_alive_on_exit=True)
+        OpenVPNClient(config_file, connect_timeout=10).connect(sigint_disconnect=True)
     else:
-        print(usage)
+        print(usage)  # noqa: T201, used as executable here
         sys.exit(1)
