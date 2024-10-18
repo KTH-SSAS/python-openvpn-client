@@ -5,7 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "python-openvpn-client"
 version = "0.0.1"
-authors = [{ name = "Ludvig Larsson", email = "ludvig19@icloud.com" }]
+authors = [
+    { name = "Ludvig Larsson", email = "lular@kth.se" },
+    { name = "Nikolaos Kakouros", email = "nkak@kth.se" },
+    { name = "Benjamin Kelley", email = "bekelley@kth.se" },
+]
+
 description = "An API for managing an OpenVPN connection"
 readme = "README.md"
 requires-python = ">=3.9" # via 'vermin'

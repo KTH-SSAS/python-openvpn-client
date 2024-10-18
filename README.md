@@ -7,6 +7,11 @@ work on macOS and Linux (images: `macOS-latest` and `ubuntu-24.04`).
 Note: Testing requires `openvpn >= 2.6` since the used `peer-fingerprint`
 feature was first introduced then.
 
+## Authors
+- Ludvig Larsson - lular@kth.se
+- Nikolaos Kakouros - nkak@kth.se
+- Benjamin Kelley - bekelley@kth.se
+
 ## Command line usage
 ```bash
 # connect
