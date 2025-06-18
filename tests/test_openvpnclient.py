@@ -32,6 +32,8 @@ import pytest
 
 from openvpnclient import PID_FILE, STDERR_FILE, STDOUT_FILE, OpenVPNClient, Status
 
+TEST_PASSWORD = "testpass"
+
 
 @pytest.fixture(autouse=True)
 def check_no_lingering_files() -> Generator[None, None, None]:
@@ -42,10 +44,17 @@ def check_no_lingering_files() -> Generator[None, None, None]:
     assert not STDOUT_FILE.exists()
 
 
-@pytest.fixture
-def openvpn_client(paths: dict[str]) -> OpenVPNClient:
-    """Return an OpenVPNClient instance."""
-    return OpenVPNClient(paths["clientconfig"])
+@pytest.fixture(params=["", "rsa", "rsa_askpass"])
+def openvpn_client(request, paths: dict[str]) -> OpenVPNClient:
+    """Return an OpenVPNClient instance for either default or RSA config."""
+    if request.param == "rsa":
+        return OpenVPNClient(ovpn_file=paths["clientconfig"])
+    elif request.param == "rsa_askpass":
+        return OpenVPNClient(
+            ovpn_file=paths["clientconfig_rsa_askpass"],
+            askpass_file=paths["client_askpass"],
+        )
+    return OpenVPNClient(ovpn_file=paths["clientconfig"])
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +82,14 @@ def paths(tmp_dir: str) -> dict[str]:
         "serverpkey": tmp_dir + "/server.key",
         "clientcrt": tmp_dir + "/client.crt",
         "clientpkey": tmp_dir + "/client.key",
+        "clientcrt_rsa": tmp_dir + "/client_rsa.crt",
+        "clientpkey_rsa": tmp_dir + "/client_rsa.key",
+        "clientcrt_rsa_askpass": tmp_dir + "/client_rsa_askpass.crt",
+        "clientpkey_rsa_askpass": tmp_dir + "/client_rsa_askpass.key",
+        "client_askpass": tmp_dir + "/askpass.pass",
         "clientconfig": tmp_dir + "/client.ovpn",
+        "clientconfig_rsa": tmp_dir + "/client_rsa.ovpn",
+        "clientconfig_rsa_askpass": tmp_dir + "/client_rsa_askpass.ovpn",
         "clientconfig_badserver": tmp_dir + "/badserver.ovpn",
         "clientconfig_badsyntax": tmp_dir + "/badsyntax.ovpn",
         "not_a_config_path": tmp_dir,
@@ -86,7 +102,13 @@ def fingerprint(
 ) -> dict[str, str]:
     """Generate client/server certificates at `paths` and return their fingerprints."""
     gen_creds("CLIENT", paths["clientpkey"], paths["clientcrt"])
+    gen_creds("CLIENT_RSA", paths["clientpkey_rsa"], paths["clientcrt_rsa"])
+    gen_creds("CLIENT_RSA_ASKPASS", paths["clientpkey_rsa_askpass"], paths["clientcrt_rsa_askpass"])
     gen_creds("SERVER", paths["serverpkey"], paths["servercrt"])
+
+    with open(paths["client_askpass"], "w", encoding="ascii") as f:
+        f.write(TEST_PASSWORD + "\n")
+
 
     def get_fingerprint(certpath: str) -> str:
         fingerprint_cmd = f"openssl x509 -fingerprint -sha256 -in {certpath} -noout"
@@ -103,6 +125,8 @@ def fingerprint(
 
     return {
         "client": get_fingerprint(paths["clientcrt"]),
+        "client_rsa": get_fingerprint(paths["clientcrt_rsa"]),
+        "client_rsa_askpass": get_fingerprint(paths["clientcrt_rsa_askpass"]),
         "server": get_fingerprint(paths["servercrt"]),
     }
 
@@ -110,7 +134,9 @@ def fingerprint(
 @pytest.fixture(scope="module")
 def gen_creds() -> str:
     """Create a self-signed certificate."""
-    keygen_cmd = "openssl ecparam -name secp384r1 -genkey -noout -out %s"
+    keygen_eliptic_cmd = "openssl ecparam -name secp384r1 -genkey -noout -out %s"
+    keygen_rsa_cmd = 'openssl genrsa -out %s 2048'
+    keygen_rsa_askpass_cmd = 'openssl genrsa -out %s -passout pass:%s 2048'
     gen_cert_cmd = (
         "openssl req -x509 "
         "-new -key %s "
@@ -120,32 +146,69 @@ def gen_creds() -> str:
     )
 
     def gen(ident: str, keypath: str, certpath: str) -> None:
-        subprocess.run((keygen_cmd % keypath).split(), check=True)
+        subprocess.run((keygen_eliptic_cmd % keypath).split(), check=True)
+        subprocess.run((keygen_rsa_cmd % keypath).split(), check=True)
+        subprocess.run((keygen_rsa_askpass_cmd % (keypath, TEST_PASSWORD)).split(), check=True)
         subprocess.run((gen_cert_cmd % (keypath, certpath, ident)).split(), check=True)
 
     return gen
-
 
 @pytest.fixture(scope="module", autouse=True)
 def gen_clientconfs(
     server_details: dict[str], fingerprint: dict[str], paths: dict[str]
 ) -> None:
     """Create mock client configurations."""
-    conf = (
-        "client\n"
-        f"remote {server_details['public_ip']} {server_details['public_port']}\n"
-        "explicit-exit-notify 5\n"
-        "<key>\n"
-        f"{Path(paths['clientpkey']).read_text(encoding='ascii')}\n"
-        "</key>\n"
-        "<cert>\n"
-        f"{Path(paths['clientcrt']).read_text(encoding='ascii')}\n"
-        "</cert>\n"
-        f"peer-fingerprint {fingerprint['server']}"
+    def generate_config(
+       remote_ip: str,
+       remote_port: str,
+       key: str,
+       cert: str,
+       fingerprint_: str 
+    ) -> str:
+        """Generate a basic OpenVPN client configuration."""
+        return (
+            "client\n"
+            f"remote {remote_ip} {remote_port}\n"
+            "explicit-exit-notify 5\n"
+            "<key>\n"
+            f"{key}\n"
+            "</key>\n"
+            "<cert>\n"
+            f"{cert}\n"
+            "</cert>\n"
+            f"peer-fingerprint {fingerprint_}"
+        )
+
+    conf = generate_config(
+        remote_ip = server_details['public_ip'],
+        remote_port = server_details['public_port'],
+        key = Path(paths['clientpkey']).read_text(encoding='ascii'),
+        cert = Path(paths['clientcrt']).read_text(encoding='ascii'),
+        fingerprint_ = fingerprint['server']
+    )
+    conf_rsa = generate_config(
+        remote_ip=server_details['public_ip'],
+        remote_port=server_details['public_port'],
+        key=Path(paths['clientpkey_rsa']).read_text(encoding='ascii'),
+        cert=Path(paths['clientcrt_rsa']).read_text(encoding='ascii'),
+        fingerprint_=fingerprint['server']
+    )
+    conf_rsa_askpass = generate_config(
+        remote_ip=server_details['public_ip'],
+        remote_port=server_details['public_port'],
+        key=Path(paths['clientpkey_rsa_askpass']).read_text(encoding='ascii'),
+        cert=Path(paths['clientcrt_rsa_askpass']).read_text(encoding='ascii'),
+        fingerprint_=fingerprint['server']
     )
 
     with Path(paths["clientconfig"]).open("w", encoding="ascii") as f:
         f.write(conf)
+
+    with Path(paths["clientconfig_rsa"]).open("w", encoding="ascii") as f:
+        f.write(conf_rsa)
+
+    with Path(paths["clientconfig_rsa_askpass"]).open("w", encoding="ascii") as f:
+        f.write(conf_rsa_askpass)
 
     with Path(paths["clientconfig_badserver"]).open("w", encoding="ascii") as f:
         f.write(conf.replace("1", "3"))
@@ -167,6 +230,8 @@ def local_server(
         f"--server {server_details['base_ip']} {server_details['netmask']} "
         f"--port {server_details['public_port']} "
         f"--peer-fingerprint {fingerprint['client']} "
+        f"--peer-fingerprint {fingerprint['client_rsa']} "
+        f"--peer-fingerprint {fingerprint['client_rsa_askpass']} "
         f"--cert {paths['servercrt']} "
         f"--key {paths['serverpkey']} "
         "--dev tun_server "
@@ -198,7 +263,6 @@ def test_connect_then_disconnect(openvpn_client: OpenVPNClient) -> None:
     assert openvpn_client.status is Status.CONNECTED
     openvpn_client.disconnect()
     assert OpenVPNClient._get_pid() == -1  # noqa: SLF001
-
 
 def test_context_manager(openvpn_client: OpenVPNClient) -> None:
     """Test that the context manager works as the above test."""
@@ -246,7 +310,6 @@ def test_server_not_reachable(paths: dict) -> None:
     with pytest.raises(TimeoutError):  # noqa: SIM117
         with OpenVPNClient(paths["clientconfig_badserver"]):
             raise AssertionError("Should not reach here")  # noqa: EM101, TRY003
-
 
 def test_invalid_paths(paths: dict) -> None:
     """Make sure an invalid path is found and not used to connect."""

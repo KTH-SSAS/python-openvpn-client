@@ -16,7 +16,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
 ]
-dependencies = ["psutil", "docopt", "typing_extensions"]
+dependencies = ["psutil"]
 
 [project.urls]
 Homepage = "https://github.com/KTH-SSAS/python-openvpn-client"

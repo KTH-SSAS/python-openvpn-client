@@ -13,10 +13,10 @@ from enum import Enum
 from pathlib import Path
 from subprocess import PIPE, CalledProcessError, check_call
 from tempfile import gettempdir
+from argparse import ArgumentParser
+import shlex
 
 import psutil
-from docopt import docopt
-from typing_extensions import Self
 
 PID_FILE = Path(gettempdir()) / "openvpnclient.pid"
 STDERR_FILE = Path(gettempdir()) / "openvpnclient.stderr"
@@ -48,7 +48,12 @@ class OpenVPNClient:
     timer: threading.Timer
     lock: threading.Lock
 
-    def __init__(self, ovpn_file: str, connect_timeout: int = 5) -> None:
+    def __init__(
+        self,
+        ovpn_file: str,
+        askpass_file: str = "",
+        connect_timeout: int = 5
+    ) -> None:
         """Initialize the OpenVPN client.
 
         :param ovpn_file: The OpenVPN configuration file
@@ -65,16 +70,25 @@ class OpenVPNClient:
             err_msg = f"File '{ovpn_file}' not found, or is not a file"
             raise FileNotFoundError(err_msg)
 
+        if askpass_file:
+            askpass_path = Path(askpass_file)
+            if not askpass_path.exists() or not askpass_path.is_file():
+                err_msg = f"File '{askpass_file}' not found, or is not a file"
+                raise FileNotFoundError(err_msg)
+
+            os.environ["SUDO_ASKPASS"] = str(askpass_path)
+
         if not shutil.which("openvpn"):
             err_msg = "OpenVPN must be installed and available on the PATH"
             raise RuntimeError(err_msg)
 
         self.ovpn_file = Path(ovpn_file)
+        self.askpass_file = Path(askpass_file) if askpass_file else None
         self.ovpn_dir = self.ovpn_file.parent
         self.connect_timeout = connect_timeout
         self.lock = threading.Lock()
 
-    def __enter__(self) -> Self:
+    def __enter__(self) -> 'OpenVPNClient':
         """Auto-connect when using a context manager."""
         self.connect()
         return self
@@ -126,14 +140,14 @@ class OpenVPNClient:
         # 2. has passwordless sudo enabled
         must_supply_password = OpenVPNClient._must_supply_password()
         sudo_pw_option = "-S " if must_supply_password else ""
+        askpass_option = f"--askpass '{self.askpass_file}'" if self.askpass_file else ''
+        route_up_cmd = f'{sys.executable} -c "import os, signal; os.kill({os.getpid()}, signal.SIGUSR1)"'
         cmd = (
-            f"sudo {sudo_pw_option}openvpn --cd {self.ovpn_dir} --config {self.ovpn_file} "
+            f"sudo {sudo_pw_option} openvpn --cd {self.ovpn_dir} --config '{self.ovpn_file}' {askpass_option} "
             f"--dev tun_ovpn --connect-retry-max 3 --connect-timeout {self.connect_timeout} "
-            "--script-security 2 --route-delay 1 --route-up"
-        ).split()
-        cmd.append(  # command for route-up should be 'one argument'
-            f"{sys.executable} -c 'import os, signal; os.kill({os.getpid()}, signal.SIGUSR1)'"
+            f"--script-security 2 --route-delay 1 --route-up '{route_up_cmd}'"
         )
+        cmd = shlex.split(cmd)
         self.proc = subprocess.Popen(
             cmd,
             stdin=PIPE,
@@ -293,7 +307,7 @@ class OpenVPNClient:
             process.stdin.flush()
 
         try:
-            OpenVPNClient._on_process_exit(pid=process.pid, timeout=10)
+            OpenVPNClient._on_process_exit(pid=process.pid, timeout=30)
         except psutil.TimeoutExpired:
             msg = "Failed to terminate OpenVPN process, killing instead"
             logger.info(msg)
@@ -304,31 +318,23 @@ class OpenVPNClient:
                 process.stdin.write(os.environ["SUDO_PASSWORD"] + "\n")
                 process.stdin.flush()
 
-            OpenVPNClient._on_process_exit(pid=process.pid, timeout=5)
+            OpenVPNClient._on_process_exit(pid=process.pid, timeout=30)
 
 
-usage = """
-    Usage:
-        openvpnclient.py --config=<config_file>
-        openvpnclient.py --disconnect
-
-    Options:
-        -h --help                Show this help message
-        --config=<config_file>   Configuration file (.ovpn)
-        --disconnect             Disconnect ongoing connection
-
-    Notes:
-        Any ca/crt/pkey files referenced in the .ovpn file should be relative
-        to the .ovpn file's parent directory.
-"""
 if __name__ == "__main__":
-    args = docopt(usage)
+    argparse = ArgumentParser(description="OpenVPN Client")
+    argparse.add_argument("--config", type=str, help="Configuration file (.ovpn)")
+    argparse.add_argument("--askpass", type=str, help="File for password input for the .ovpn file")
+    argparse.add_argument("--disconnect", action="store_true", help="Disconnect ongoing connection")
+    
+    args = argparse.parse_args()
 
-    if args["--disconnect"]:
+    if args.disconnect:
         OpenVPNClient.disconnect()
-    elif args["--config"]:
-        config_file = args["--config"]
-        OpenVPNClient(config_file, connect_timeout=10).connect(sigint_disconnect=True)
-    else:
-        print(usage)  # noqa: T201, used as executable here
-        sys.exit(1)
+        sys.exit(0)
+    if args.config:
+        OpenVPNClient(
+            ovpn_file=args.config,
+            askpass_file=args.askpass,
+            connect_timeout=20
+        ).connect(sigint_disconnect=True)
