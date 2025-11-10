@@ -1,3 +1,7 @@
+name: Build and publish to PyPI and TestPyPI
+
+on: [push, pull_request]
+
 jobs:
   build:
     name: Build distribution 📦
@@ -25,7 +29,6 @@ jobs:
   publish-to-pypi:
     name: >-
       Publish Python distribution to PyPI
-    if: startsWith(github.ref, 'refs/tags/')  # only tagged pushes
     needs:
     - build
     runs-on: ubuntu-latest
@@ -48,14 +51,11 @@ jobs:
     needs:
     - build
     runs-on: ubuntu-latest
-
     environment:
       name: testpypi
       url: https://test.pypi.org/p/python-openvpn-client
-
     permissions:
       id-token: write
-
     steps:
     - name: Download all the dists
       uses: actions/download-artifact@v4
